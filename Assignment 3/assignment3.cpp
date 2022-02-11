@@ -26,6 +26,7 @@ Lance Putnam, Oct. 2014
 #include "al/app/al_App.hpp"
 #include "al/graphics/al_Shapes.hpp"
 #include "al/math/al_Functions.hpp"
+#include "al/app/al_GUIDomain.hpp"
 #include "al/math/al_Random.hpp"
 
 using namespace al;
@@ -45,66 +46,35 @@ struct MyApp : public App {
   Boid boids[Nb];
   Mesh heads, tails;
   Mesh box;
+  VAOMesh mCube;
+
+  Vec3f center;
+
+  Parameter pushRadius{"/pushRadius", "", 0.05, "", 0.01, 0.3};
+  Parameter pushStrength{"/pushStrength", "", 2, "", 1, 10};
+  Parameter matchRadius{"/matchRadius", "", 0.2, "", 0.05, 1.0};
+  Parameter huntUrge{"/huntUrge", "", 0.2, "", 0.1, 1.0};
+  Parameter localRadius{"/localRadius", "", 1.5, "", 0.1, 5.0};
+  
 
   double angle{0};
 
+  void onInit() override {
+    auto GUIdomain = GUIDomain::enableGUI(defaultWindowDomain());
+    auto &gui = GUIdomain->newGUI();
+    gui.add(pushRadius);  // add parameter to GUI
+    gui.add(pushStrength);   // add parameter to GUI
+    gui.add(matchRadius);
+    gui.add(huntUrge);
+    gui.add(localRadius);
+  }
+
   void onCreate() {
-    box.primitive(Mesh::LINE_LOOP);
-
-    box.vertex(-1, -1, -1);
-    box.vertex(-1, -1, 1);
-    box.vertex(-1, 1, 1);
-    box.vertex(-1, 1, -1);
-    box.vertex(-1, -1, -1);
-
-    box.vertex(1, -1, -1);
-    box.vertex(1, 1, -1);
-    box.vertex(-1, 1, -1);
-    box.vertex(-1, 1, 1);
-    box.vertex(1, 1, 1);
-    box.vertex(1, 1, -1);
-
-    box.vertex(1, -1, -1);
-    box.vertex(1, -1 ,1);
-    box.vertex(-1, -1, 1);
-    box.vertex(-1, 1, 1);
-    box.vertex(1, 1, 1);
-    box.vertex(1, -1, 1);
-
-
-
-
-
-
-
-
-
-
-    // box.vertex(-1, -1, 1);  // node point 1
-    // box.vertex(1, -1, 1);   // x change    
-    // box.vertex(-1, 1, 1);   // y change
-    // box.vertex(-1, -1, -1); // z change, sub-node 1
-    // box.vertex(1, -1, -1);  // sub-x change
-    // box.vertex(-1, 1, -1);  // sub-y change
-
-
-    // box.vertex(1, -1, 1);
-    // box.vertex(1, -1, -1);
-
-    // box.vertex(1, 1, -1);   // node point 2
-    // box.vertex(-1, 1, -1);  // x change
-    // box.vertex(1, -1, -1);  // y change
-    // box.vertex(1, 1, 1);    // z change, sub-node 2
-    // box.vertex(-1, 1, 1);   // sub-x change
-    // box.vertex(1, -1, 1);   // sub-y change
-
-
-    // box.vertex(-1, 1, 1);
-    // box.vertex(-1, 1, -1);
-
-    //vertices need to be 3D
-    nav().pullBack(4);
-
+    addCube(mCube);
+    mCube.primitive(Mesh::LINE_LOOP);
+    mCube.scale(4);
+    mCube.update();
+    nav().pos(0, 0, 10);
     resetBoids();
   }
 
@@ -124,24 +94,20 @@ struct MyApp : public App {
     for (int i = 0; i < Nb - 1; ++i) {
       for (int j = i + 1; j < Nb; ++j) {
         // printf("checking boids %d and %d\n", i,j);
-
         auto ds = boids[i].pos - boids[j].pos;
-            // checks each boid against one another in consecutive order
-            // starts boid[0] against boid[1], then boid[1] against boid[2], etc.
+
         auto dist = ds.mag();
-            // distance magnitude between the two boids
+        // distance magnitude between the two boids
 
         // Collision avoidance
-        float pushRadius = 0.01;
-        float pushStrength = 2;
         float push = exp(-al::pow2(dist / pushRadius)) * pushStrength;
+        // e^(-2^(dist/pushRadius)) * pushStrength
 
         auto pushVector = ds.normalized() * push;
-        boids[i].pos += pushVector;
-        boids[j].pos -= pushVector;
+        boids[i].pos = boids[i].pos + pushVector;
+        boids[j].pos = boids[j].pos - pushVector;
 
         // Velocity matching
-        float matchRadius = 0.125;
         float nearness = exp(-al::pow2(dist / matchRadius));
         Vec3f veli = boids[i].vel;
         Vec3f velj = boids[j].vel;
@@ -149,33 +115,46 @@ struct MyApp : public App {
         // Take a weighted average of velocities according to nearness
         boids[i].vel = veli * (1 - 0.5 * nearness) + velj * (0.5 * nearness);
         boids[j].vel = velj * (1 - 0.5 * nearness) + veli * (0.5 * nearness);
-
-        // TODO: Flock centering
       }
+    }
+
+    // Flock Centering
+    for (int b = 0; b < Nb; b++) {
+      Boid point =  boids[b];
+      int count = 0;
+      Vec3f sum(0, 0, 0);
+
+      for (int i = 0; i < Nb; i++) {
+        if (b != i) {
+          if ((point.pos - boids[i].pos).mag() < localRadius) {
+            sum = sum + boids[i].pos;
+            count++;
+          }
+        }
+      }
+      if (count == 0)
+        center = boids[b].pos;
+      else
+        center = sum / count;
+      boids[b].pos = boids[b].pos - (center * 0.01);
+      //std::cout << center << std::endl;
     }
 
     // Update boid independent behaviors
     for (auto& b : boids) {
       // Random "hunting" motion
-      float huntUrge = 0.2;
       auto hunt = rnd::ball<Vec3f>();
       // Use cubed distribution to make small jumps more frequent
       hunt *= hunt.magSqr();
       b.vel += hunt * huntUrge;
 
-      // Bound boid into a box
-      if (b.pos.x > 1 || b.pos.x < -1) {
-        b.pos.x = b.pos.x > 0 ? 1 : -1;
-        b.vel.x = -b.vel.x;
-      }
-      if (b.pos.y > 1 || b.pos.y < -1) {
-        b.pos.y = b.pos.y > 0 ? 1 : -1;
-        b.vel.y = -b.vel.y;
-      }
-      if (b.pos.z > 1 || b.pos.z < -1) {
-        b.pos.z = b.pos.z > 0 ? 1 : -1;
-        b.vel.z = -b.vel.z;
-      }
+      // Wrapping of boids within bounds
+      if (b.pos.x > 2) b.pos.x = -2;
+      if (b.pos.x < -2) b.pos.x = 2;
+      if (b.pos.y > 2) b.pos.y = -2;
+      if (b.pos.y < -2) b.pos.y = 2;
+      if (b.pos.z > 2) b.pos.z = -2;
+      if (b.pos.z < -2) b.pos.z = 2;
     }
 
     // Generate meshes
@@ -184,6 +163,7 @@ struct MyApp : public App {
 
     tails.reset();
     tails.primitive(Mesh::LINES);
+    
 
     for (int i = 0; i < Nb; ++i) {
       boids[i].update(dt);
@@ -213,7 +193,7 @@ struct MyApp : public App {
 
     // g.stroke(1);
     g.color(1);
-    g.draw(box);
+    g.draw(mCube);
   }
 
   bool onKeyDown(const Keyboard& k) {
@@ -226,4 +206,8 @@ struct MyApp : public App {
   }
 };
 
-int main() { MyApp().start(); }
+int main() {
+  MyApp app;
+  app.configureAudio(48000, 512, 2, 0);
+  app.start();
+}
